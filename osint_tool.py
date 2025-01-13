@@ -1,51 +1,114 @@
 import requests
-from flask import Flask, redirect, request
+from bs4 import BeautifulSoup
+from PIL import Image
+from PIL.ExifTags import TAGS, GPSTAGS
+import os
+from flask import Flask, request
 
-app = Flask(__name__)
+# 1. Scrape Instagram Pictures
+def download_instagram_pictures(username):
+    url = f"https://www.instagram.com/{username}/"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"[!] Failed to access Instagram profile. HTTP {response.status_code}")
+            return
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        scripts = soup.find_all("script", type="text/javascript")
+        for script in scripts:
+            if "display_url" in script.string:
+                # Extract image URLs
+                start = script.string.find('display_url') + len('display_url":"')
+                end = script.string.find('","', start)
+                img_url = script.string[start:end].replace("\\u0026", "&")
+                print(f"[+] Found Image: {img_url}")
+                
+                # Download the image
+                img_data = requests.get(img_url).content
+                filename = f"{username}_image_{img_url.split('/')[-1]}"
+                with open(filename, 'wb') as file:
+                    file.write(img_data)
+                print(f"[+] Image saved: {filename}")
+    except Exception as e:
+        print(f"[!] Error scraping Instagram: {str(e)}")
 
-# Example function to download Instagram images and find metadata
-def download_instagram_images(instagram_user):
-    # In a real scenario, you would use Instagram's API or scraping techniques to download images.
-    # This is a placeholder to indicate functionality.
-    print(f"Downloading images for {instagram_user}...")
+# 2. Extract Metadata (EXIF)
+def extract_exif_data(image_path):
+    try:
+        image = Image.open(image_path)
+        exif_data = image._getexif()
+        
+        if not exif_data:
+            print(f"[!] No EXIF data found in {image_path}")
+            return
+        
+        metadata = {}
+        for tag_id, value in exif_data.items():
+            tag = TAGS.get(tag_id, tag_id)
+            if tag == "GPSInfo":
+                gps_data = {}
+                for key in value:
+                    gps_tag = GPSTAGS.get(key, key)
+                    gps_data[gps_tag] = value[key]
+                metadata["GPSInfo"] = gps_data
+            else:
+                metadata[tag] = value
+        
+        print(f"[+] Metadata for {image_path}: {metadata}")
+        return metadata
+    except Exception as e:
+        print(f"[!] Failed to extract EXIF data: {str(e)}")
 
-# Route to handle the masked URL
-@app.route('/masked-url/<token>')
-def masked_url(token):
-    # Example mapping of tokens to real URLs
-    ip_logging_urls = {
-        "sampletoken1": "http://127.0.0.1:8080",  # Example HTTP URL
-        "sampletoken2": "https://example.com/ip-logger",  # Example HTTPS URL
-    }
-    
-    real_url = ip_logging_urls.get(token)
-    
-    if real_url:
-        return redirect(real_url)
-    else:
-        return "Invalid URL", 404
+# 3. Reverse Geolocation (if GPS exists)
+def reverse_geocode(lat, lon):
+    try:
+        api_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
+        response = requests.get(api_url)
+        if response.status_code == 200:
+            location = response.json().get('display_name', 'Unknown Location')
+            print(f"[+] Location: {location}")
+        else:
+            print(f"[!] Reverse geocoding failed. HTTP {response.status_code}")
+    except Exception as e:
+        print(f"[!] Error during reverse geolocation: {str(e)}")
 
-# Main function to handle the social engineering OSINT tool
-def social_engineering_osint_tool():
-    print("Welcome to the Social Engineering OSINT Tool")
-    
-    # Get Instagram username from user
-    instagram_user = input("Enter the Instagram username to gather OSINT data: ")
-    
-    # Download Instagram images
-    download_instagram_images(instagram_user)
-    
-    # You could add more OSINT collection methods here as needed (e.g., email address lookup, etc.)
-    
-    # Mask URL functionality
-    print("Generating Masked URL for IP logging...")
-    token = input("Enter a unique token for the URL masking: ")
-    
-    # Redirect user to the masked URL
-    masked_url = f"http://127.0.0.1:5000/masked-url/{token}"
-    print(f"Send this masked URL to the target: {masked_url}")
+# 4. IP Logging Tool
+def ip_logger():
+    app = Flask(__name__)
+    log_file = "ip_logs.txt"
 
-# Start the Flask web server
-if __name__ == '__main__':
-    social_engineering_osint_tool()  # Run the OSINT tool to gather info and generate the masked URL
-    app.run(debug=True)  # Start the web server
+    @app.route('/')
+    def home():
+        visitor_ip = request.remote_addr
+        print(f"[+] Visitor IP Logged: {visitor_ip}")
+        with open(log_file, 'a') as file:
+            file.write(f"IP: {visitor_ip}\n")
+        return "IP Logged Successfully."
+
+    app.run(host="0.0.0.0", port=8080)
+
+# Main Function
+if __name__ == "__main__":
+    print("[*] Starting OSINT tool...")
+
+    # Step 1: Instagram username
+    instagram_user = input("[?] Enter Instagram username: ")
+    download_instagram_pictures(instagram_user)
+
+    # Step 2: Analyze saved images
+    image_files = [f for f in os.listdir() if f.startswith(instagram_user)]
+    for image in image_files:
+        exif_data = extract_exif_data(image)
+        if exif_data and "GPSInfo" in exif_data:
+            gps_info = exif_data["GPSInfo"]
+            lat = gps_info.get('GPSLatitude', None)
+            lon = gps_info.get('GPSLongitude', None)
+            if lat and lon:
+                reverse_geocode(lat, lon)
+
+    # Step 3: Start IP logger
+    print("[*] Starting IP logger. Open your browser and share the link:")
+    ip_logger()
